@@ -6,18 +6,14 @@ import sys
 
 app = Flask(__name__)
 
-# -------------------------------
-# 🔧 FUNKCJE LOGICZNE
-# -------------------------------
 def lemmatize_text(text):
-    """Zwraca listę uproszczonych tokenów (bez interpunkcji i liczb)."""
+    """Prosta 'lematyzacja' – wyodrębnia słowa alfabetyczne (bez interpunkcji i liczb)."""
     return re.findall(r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", text.lower())
 
 def count_keywords(text, keywords):
-    """Zlicza wystąpienia słów kluczowych (po uproszczonej lematyzacji)."""
+    """Zlicza wystąpienia słów kluczowych w tekście."""
     text_tokens = lemmatize_text(text)
     counts = {}
-
     for keyword in keywords:
         kw_tokens = lemmatize_text(keyword)
         kw_len = len(kw_tokens)
@@ -26,7 +22,6 @@ def count_keywords(text, keywords):
             if text_tokens[i:i + kw_len] == kw_tokens:
                 count += 1
         counts[keyword] = count
-
     return counts
 
 def generate_keyword_report(counts, min_val=1, max_val=3):
@@ -42,7 +37,6 @@ def generate_keyword_report(counts, min_val=1, max_val=3):
         else:
             status = "✅"
             message = "W normie."
-
         report[kw] = {
             "used": used,
             "allowed_min": min_val,
@@ -54,7 +48,7 @@ def generate_keyword_report(counts, min_val=1, max_val=3):
     return report
 
 def humanize_text(text, counts, min_val=1, max_val=3):
-    """Dodaje lub redukuje słowa kluczowe, zachowując naturalność."""
+    """Dodaje lub redukuje słowa kluczowe w tekście, zachowując naturalność."""
     improved_text = text
     for kw, used in counts.items():
         if used < min_val:
@@ -78,26 +72,17 @@ def humanize_text(text, counts, min_val=1, max_val=3):
             improved_text = " ".join(words)
     return improved_text.strip()
 
-# -------------------------------
-# ⚙️ ENDPOINT API
-# -------------------------------
 @app.route("/api/lemmatize_and_count", methods=["POST"])
 def handle_request():
+    """Obsługuje żądania POST — analizuje i generuje raport SEO."""
     try:
-        # ✅ LOG: wejście
-        print("📩 Otrzymano żądanie POST /api/lemmatize_and_count")
-
-        # ✅ Walidacja formatu JSON
-        if not request.is_json:
-            raise ValueError("Brak formatu JSON — użyj Content-Type: application/json")
-
         data = request.get_json(force=True)
         text = data.get("text", "")
         keywords = data.get("keywords", [])
         mode = data.get("mode", "analysis")
 
         if not text:
-            raise KeyError("Brak klucza 'text'")
+            raise ValueError("Brak parametru 'text'")
         if not isinstance(keywords, list):
             raise TypeError("'keywords' musi być listą")
 
@@ -125,13 +110,11 @@ def handle_request():
         else:
             raise ValueError("Nieprawidłowy tryb — użyj 'analysis' lub 'humanized'.")
 
-        print("✅ Analiza zakończona sukcesem")
         return jsonify(response), 200
 
     except Exception as e:
-        # 🔥 Pełny log błędu z numerem linii
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        line_number = exc_tb.tb_lineno
+        line_number = exc_tb.tb_lineno if exc_tb else None
         error_details = {
             "error": str(e),
             "line": line_number,
@@ -141,10 +124,7 @@ def handle_request():
         print("❌ Błąd w endpointzie:", error_details)
         return jsonify(error_details), 500
 
-# -------------------------------
-# 🧩 Wymagane przez Vercel
-# -------------------------------
 def handler(request):
-    """Kompatybilność z Vercel Python Runtime"""
+    """Kompatybilność z Vercel Python Runtime."""
     with app.request_context(request.environ):
         return app.full_dispatch_request()
