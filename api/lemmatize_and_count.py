@@ -113,7 +113,12 @@ def handle_request():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-def handler(request):
+    def handler(request):
+    """Kompatybilność z Vercel Python Runtime"""
+    from flask import Request
+    with app.request_context(request.environ):
+        return app.full_dispatch_request()
+
     """Kompatybilność z Vercel Python Runtime"""
     with app.request_context(request.environ):
         return app.full_dispatch_request()
