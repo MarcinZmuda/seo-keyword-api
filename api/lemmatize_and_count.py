@@ -1,11 +1,16 @@
 from flask import Flask, request, jsonify
 import re
 import random
+import traceback
+import sys
 
 app = Flask(__name__)
 
+# -------------------------------
+# 🔧 FUNKCJE LOGICZNE
+# -------------------------------
 def lemmatize_text(text):
-    """Zwraca listę 'lepszych' tokenów (bez interpunkcji i liczb)."""
+    """Zwraca listę uproszczonych tokenów (bez interpunkcji i liczb)."""
     return re.findall(r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", text.lower())
 
 def count_keywords(text, keywords):
@@ -73,16 +78,28 @@ def humanize_text(text, counts, min_val=1, max_val=3):
             improved_text = " ".join(words)
     return improved_text.strip()
 
+# -------------------------------
+# ⚙️ ENDPOINT API
+# -------------------------------
 @app.route("/api/lemmatize_and_count", methods=["POST"])
 def handle_request():
     try:
+        # ✅ LOG: wejście
+        print("📩 Otrzymano żądanie POST /api/lemmatize_and_count")
+
+        # ✅ Walidacja formatu JSON
+        if not request.is_json:
+            raise ValueError("Brak formatu JSON — użyj Content-Type: application/json")
+
         data = request.get_json(force=True)
         text = data.get("text", "")
         keywords = data.get("keywords", [])
         mode = data.get("mode", "analysis")
 
-        if not text or not isinstance(keywords, list):
-            raise ValueError("Brak lub nieprawidłowe dane: 'text' lub 'keywords'.")
+        if not text:
+            raise KeyError("Brak klucza 'text'")
+        if not isinstance(keywords, list):
+            raise TypeError("'keywords' musi być listą")
 
         DEFAULT_MIN, DEFAULT_MAX = 1, 3
         counts = count_keywords(text, keywords)
@@ -106,19 +123,28 @@ def handle_request():
                 "summary": "Tekst został dopasowany semantycznie."
             }
         else:
-            raise ValueError("Nieprawidłowy tryb. Użyj 'analysis' lub 'humanized'.")
+            raise ValueError("Nieprawidłowy tryb — użyj 'analysis' lub 'humanized'.")
 
-        return jsonify(response)
+        print("✅ Analiza zakończona sukcesem")
+        return jsonify(response), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        # 🔥 Pełny log błędu z numerem linii
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        line_number = exc_tb.tb_lineno
+        error_details = {
+            "error": str(e),
+            "line": line_number,
+            "type": exc_type.__name__,
+            "trace": traceback.format_exc(limit=2)
+        }
+        print("❌ Błąd w endpointzie:", error_details)
+        return jsonify(error_details), 500
 
-    def handler(request):
-    """Kompatybilność z Vercel Python Runtime"""
-    from flask import Request
-    with app.request_context(request.environ):
-        return app.full_dispatch_request()
-
+# -------------------------------
+# 🧩 Wymagane przez Vercel
+# -------------------------------
+def handler(request):
     """Kompatybilność z Vercel Python Runtime"""
     with app.request_context(request.environ):
         return app.full_dispatch_request()
