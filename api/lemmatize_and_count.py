@@ -1,130 +1,119 @@
 from flask import Flask, request, jsonify
 import re
-import random
+import spacy # <-- NOWA BIBLIOTEKA
 import traceback
 import sys
 
 app = Flask(__name__)
 
-def lemmatize_text(text):
-    """Prosta 'lematyzacja' – wyodrębnia słowa alfabetyczne (bez interpunkcji i liczb)."""
-    return re.findall(r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", text.lower())
+# --- NOWOŚĆ: Załaduj polski model językowy przy starcie aplikacji ---
+# To sprawia, że jest gotowy do pracy od razu i nie ładuje się przy każdym zapytaniu.
+try:
+    nlp = spacy.load("pl_core_news_sm")
+    print("✅ Polski model językowy Spacy załadowany poprawnie.")
+except OSError:
+    print("❌ Nie znaleziono modelu 'pl_core_news_sm'. Uruchom 'python -m spacy download pl_core_news_sm'")
+    nlp = None
 
-def count_keywords(text, keywords):
-    """Zlicza wystąpienia słów kluczowych w tekście."""
-    text_tokens = lemmatize_text(text)
+def lemmatize_text_properly(text):
+    """
+    Prawdziwa lematyzacja dla języka polskiego.
+    Zamienia tekst na listę słów w ich formie podstawowej (lematów).
+    Przykład: "Wniósł pozwu o rozwodem" -> ['wnieść', 'pozew', 'o', 'rozwód']
+    """
+    if not nlp:
+        # Fallback do starej metody, jeśli model się nie załadował
+        return re.findall(r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", text.lower())
+    
+    doc = nlp(text.lower())
+    # Zwracamy listę lematów (form podstawowych) dla każdego słowa w tekście
+    return [token.lemma_ for token in doc if token.is_alpha]
+
+def count_keywords(text, keywords_with_ranges):
+    """
+    Zlicza wystąpienia słów kluczowych (lematyzowanych) w tekście.
+    Teraz rozumie odmiany słów.
+    """
+    text_lemmas = lemmatize_text_properly(text)
     counts = {}
-    for keyword in keywords:
-        kw_tokens = lemmatize_text(keyword)
-        kw_len = len(kw_tokens)
+
+    for keyword in keywords_with_ranges:
+        # Lematyzujemy słowo kluczowe, aby szukać jego formy podstawowej
+        kw_lemmas = lemmatize_text_properly(keyword)
+        kw_len = len(kw_lemmas)
         count = 0
-        for i in range(len(text_tokens) - kw_len + 1):
-            if text_tokens[i:i + kw_len] == kw_tokens:
+        
+        # Przesuwamy się po liście lematów tekstu i szukamy dokładnej sekwencji lematów frazy
+        for i in range(len(text_lemmas) - kw_len + 1):
+            if text_lemmas[i:i + kw_len] == kw_lemmas:
                 count += 1
         counts[keyword] = count
     return counts
 
-def generate_keyword_report(counts, min_val=1, max_val=3):
-    """Buduje raport statusów dla słów kluczowych."""
-    report = {}
-    for kw, used in counts.items():
-        if used < min_val:
-            status = "⚠️"
-            message = "Zbyt mało użyć — rozważ dodanie."
-        elif used > max_val:
-            status = "🚨"
-            message = "Za dużo użyć — możliwy keyword stuffing."
-        else:
-            status = "✅"
-            message = "W normie."
-        report[kw] = {
-            "used": used,
-            "allowed_min": min_val,
-            "allowed_max": max_val,
-            "remaining": max(0, max_val - used),
-            "status": status,
-            "message": message
-        }
-    return report
-
-def humanize_text(text, counts, min_val=1, max_val=3):
-    """Dodaje lub redukuje słowa kluczowe w tekście, zachowując naturalność."""
-    improved_text = text
-    for kw, used in counts.items():
-        if used < min_val:
-            needed = min_val - used
-            for _ in range(needed):
-                insert_sentence = random.choice([
-                    f"Temat {kw} jest tutaj kluczowy.",
-                    f"Warto również omówić {kw}.",
-                    f"Nie można pominąć zagadnienia {kw}."
-                ])
-                improved_text += " " + insert_sentence
-        elif used > max_val:
-            words = improved_text.split()
-            removed = 0
-            for i, w in enumerate(words):
-                if kw in w.lower():
-                    words[i] = ""
-                    removed += 1
-                    if removed >= (used - max_val):
-                        break
-            improved_text = " ".join(words)
-    return improved_text.strip()
+def parse_keywords_with_ranges(keyword_list_string):
+    """
+    Przetwarza string od użytkownika (np. "pozew o rozwód: 7-11") na słownik.
+    """
+    keywords = {}
+    for line in keyword_list_string.strip().split('\n'):
+        parts = line.split(':')
+        if len(parts) == 2:
+            key = parts[0].strip()
+            range_parts = parts[1].strip().split('-')
+            if len(range_parts) == 2:
+                try:
+                    min_val = int(range_parts[0])
+                    max_val = int(range_parts[1])
+                    keywords[key] = (min_val, max_val)
+                except ValueError:
+                    pass # Ignoruj linie z nieprawidłowymi liczbami
+    return keywords
 
 @app.route("/api/lemmatize_and_count", methods=["POST"])
 def handle_request():
-    """Obsługuje żądania POST — analizuje i generuje raport SEO."""
     try:
         data = request.get_json(force=True)
         text = data.get("text", "")
-        keywords = data.get("keywords", [])
-        mode = data.get("mode", "analysis")
+        # Zmieniamy sposób przyjmowania słów kluczowych, aby pasował do promptu
+        keyword_list_string = data.get("keywords", "") # Oczekujemy teraz stringa, nie listy
 
         if not text:
             raise ValueError("Brak parametru 'text'")
-        if not isinstance(keywords, list):
-            raise TypeError("'keywords' musi być listą")
+        if not keyword_list_string:
+             return jsonify({"keyword_report": {}, "summary": "Brak słów kluczowych do analizy."})
 
-        DEFAULT_MIN, DEFAULT_MAX = 1, 3
-        counts = count_keywords(text, keywords)
-        keyword_report = generate_keyword_report(counts, DEFAULT_MIN, DEFAULT_MAX)
+        # Przetwarzamy string na słownik z zakresami
+        keywords_with_ranges = parse_keywords_with_ranges(keyword_list_string)
+        
+        # Zliczamy słowa kluczowe używając nowej, lepszej metody
+        counts = count_keywords(text, keywords_with_ranges.keys())
+        
+        # Budujemy raport
+        report = {}
+        for kw, used in counts.items():
+            min_val, max_val = keywords_with_ranges.get(kw, (0, 100)) # Domyślny, szeroki zakres
+            
+            status = "✅"
+            if used < min_val: status = "⚠️"
+            if used >= max_val: status = "🚨"
 
-        if mode == "analysis":
-            response = {
-                "mode": "analysis",
-                "keyword_report": keyword_report,
-                "summary": f"Przetworzono {len(keywords)} fraz."
+            report[kw] = {
+                "used": used,
+                "allowed_min": min_val,
+                "allowed_max": max_val,
+                "status": status,
+                "range": f"{min_val}-{max_val}"
             }
-        elif mode == "humanized":
-            improved_text = humanize_text(text, counts, DEFAULT_MIN, DEFAULT_MAX)
-            new_counts = count_keywords(improved_text, keywords)
-            new_report = generate_keyword_report(new_counts, DEFAULT_MIN, DEFAULT_MAX)
-            response = {
-                "mode": "humanized",
-                "original_report": keyword_report,
-                "adjusted_report": new_report,
-                "updated_text": improved_text,
-                "summary": "Tekst został dopasowany semantycznie."
-            }
-        else:
-            raise ValueError("Nieprawidłowy tryb — użyj 'analysis' lub 'humanized'.")
 
+        response = {
+            "mode": "analysis",
+            "keyword_report": report,
+            "summary": f"Przeanalizowano {len(counts)} fraz kluczowych."
+        }
         return jsonify(response), 200
 
     except Exception as e:
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        line_number = exc_tb.tb_lineno if exc_tb else None
-        error_details = {
-            "error": str(e),
-            "line": line_number,
-            "type": exc_type.__name__,
-            "trace": traceback.format_exc(limit=2)
-        }
+        error_details = {"error": str(e), "line": exc_tb.tb_lineno}
         print("❌ Błąd w endpointzie:", error_details)
         return jsonify(error_details), 500
-
-def handler(request):
-    """Kompatybilność z Vercel Python Runtime."""
-    with app.request_context(request.environ):
-        return app.full_dispatch_request()
