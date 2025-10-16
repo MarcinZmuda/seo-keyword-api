@@ -2,6 +2,7 @@ import os
 import requests
 import re
 import spacy
+import json
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -12,7 +13,6 @@ app = Flask(__name__)
 # --- ZMIENNE ŚRODOWISKOWE I ADRESY URL ---
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 SERPAPI_URL = "https://serpapi.com/search"
-# Upewnij się, że URL do langextract jest poprawny
 LANGEXTRACT_API_URL = "https://langextract-api.onrender.com/extract" 
 
 # --- ZAŁADOWANIE MODELU JĘZYKOWEGO SPACY ---
@@ -24,7 +24,7 @@ except OSError:
     nlp = None
 
 # ==============================================================================
-# ENDPOINT S1: ANALIZA WSTĘPNA
+# SEKCJA S1: ANALIZA WSTĘPNA (bez zmian)
 # ==============================================================================
 
 def call_serpapi(topic):
@@ -53,7 +53,7 @@ def perform_s1_analysis():
     topic = data.get("topic")
 
     if not topic: return jsonify({"error": "Brak parametru 'topic'"}), 400
-    if not SERPAPI_KEY: return jsonify({"error": "Brak klucza SERPAPI_KEY w zmiennych środowiskowych"}), 500
+    if not SERPAPI_KEY: return jsonify({"error": "Brak klucza SERPAPI_KEY"}), 500
 
     serp_data = call_serpapi(topic)
     if not serp_data: return jsonify({"error": "Nie udało się pobrać danych z SerpApi"}), 502
@@ -86,8 +86,37 @@ def perform_s1_analysis():
     return jsonify(final_response)
 
 # ==============================================================================
-# ENDPOINT S3: WERYFIKACJA SŁÓW KLUCZOWYCH
+# SEKCJA S3: WERYFIKACJA SŁÓW KLUCZOWYCH (z nową logiką)
 # ==============================================================================
+
+def parse_plain_text_keywords(text_data):
+    """
+    NOWA FUNKCJA: Konwertuje wieloliniowy tekst na obiekt JSON (słownik).
+    """
+    keyword_dict = {}
+    lines = text_data.strip().split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line or ':' not in line:
+            continue
+        
+        parts = line.split(':', 1)
+        keyword = parts[0].strip()
+        range_str = parts[1].strip().lower().replace('x', '')
+        
+        range_str = range_str.replace('–', '-').replace('—', '-')
+        
+        try:
+            if '-' in range_str:
+                min_val, max_val = map(int, range_str.split('-'))
+                keyword_dict[keyword] = [min_val, max_val]
+            else:
+                val = int(range_str)
+                keyword_dict[keyword] = [val, val]
+        except ValueError:
+            print(f"⚠️ Pominięto błędną linię w parsowaniu: '{line}'")
+            continue
+    return keyword_dict
 
 def lemmatize_text_properly(text):
     if not nlp: return text.lower().split()
@@ -114,10 +143,19 @@ def verify_s3_keywords():
     
     data = request.get_json(force=True)
     text = data.get("text", "")
-    keywords_with_ranges = data.get("keywords_with_ranges", {})
+    keywords_data = data.get("keywords_with_ranges", {})
 
     if not text: return jsonify({"error": "Brak parametru 'text'"}), 400
-    if not isinstance(keywords_with_ranges, dict): return jsonify({"error": "'keywords_with_ranges' musi być obiektem JSON"}), 400
+
+    # --- INTELIGENTNA DETEKCJA FORMATU ---
+    if isinstance(keywords_data, str):
+        # Jeśli dane są stringiem, parsujemy je naszą nową funkcją
+        keywords_with_ranges = parse_plain_text_keywords(keywords_data)
+    elif isinstance(keywords_data, dict):
+        # Jeśli dane są już JSON-em, używamy ich bezpośrednio
+        keywords_with_ranges = keywords_data
+    else:
+        return jsonify({"error": "'keywords_with_ranges' musi być obiektem JSON lub wieloliniowym stringiem"}), 400
 
     counts = count_keywords(text, keywords_with_ranges.keys())
     report = {}
@@ -130,6 +168,6 @@ def verify_s3_keywords():
     
     return jsonify({"keyword_report": report}), 200
 
-# --- URUCHOMIENIE SERWERA (dla testów lokalnych) ---
+# --- URUCHOMIENIE SERWERA ---
 if __name__ == "__main__":
     app.run(port=os.getenv("PORT", 5001), debug=True)
